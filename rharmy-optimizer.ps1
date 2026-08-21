@@ -8,10 +8,9 @@
     style of tool. It gives you:
 
       * Install    - bulk install / uninstall software via winget (with choco fallback)
-      * Tweaks     - performance, privacy, debloat and GAMING tweaks (each undoable)
+      * Tweaks     - performance, privacy and debloat tweaks (each one is undoable)
       * Config     - Windows features, legacy panels, quick fixes
       * Updates    - Windows Update policy presets (Default / Security / Disabled)
-      * System     - live info, disk usage, VSS shadow-storage list/resize
       * Log        - everything the tool does is logged to screen and disk
 
     Every destructive action can create a System Restore Point first, and every
@@ -94,7 +93,7 @@ if ($env:RHARMY_URL) { $script:SelfUrl = $env:RHARMY_URL }
 #  Globals
 # ---------------------------------------------------------------------------
 $script:AppName    = 'Rharmy Optimizer'
-$script:AppVersion = '1.1.0'
+$script:AppVersion = '1.0.0'
 $script:WorkDir    = Join-Path $env:LOCALAPPDATA 'Rharmy Optimizer'
 $script:LogFile    = Join-Path $script:WorkDir ("rharmy-optimizer_{0:yyyy-MM-dd}.log" -f (Get-Date))
 $script:Sync       = [hashtable]::Synchronized(@{})
@@ -314,72 +313,6 @@ function New-RharmyRestorePoint {
     } catch {
         Write-Log "Could not create restore point: $($_.Exception.Message)" 'WARN'
         return $false
-    }
-}
-
-# ---------------------------------------------------------------------------
-#  VSS / Shadow Storage
-#
-#  Volume Shadow Copy reserves disk space for restore points and can quietly
-#  eat a whole drive. These helpers expose `vssadmin list shadowstorage` and
-#  `vssadmin resize shadowstorage` so the user can inspect and cap it.
-# ---------------------------------------------------------------------------
-function Get-ShadowStorage {
-    param([string]$Drive = '')
-    Write-Log 'Querying VSS shadow storage...' 'STEP'
-    $lines = @()
-    if ($Drive) {
-        $lines = @(& vssadmin.exe list shadowstorage /for="$Drive" 2>&1 | ForEach-Object { "$_" })
-    } else {
-        $lines = @(& vssadmin.exe list shadowstorage 2>&1 | ForEach-Object { "$_" })
-    }
-    foreach ($l in $lines) { if ($l -match '\S') { Write-Log "  $l" } }
-    return ($lines -join "`r`n")
-}
-
-function Resize-ShadowStorage {
-    param(
-        [string]$Drive   = "$env:SystemDrive",
-        [string]$MaxSize = '2GB'
-    )
-    $d = $Drive.Trim().TrimEnd('\')
-    if (-not $d) { $d = "$env:SystemDrive" }
-    Write-Log "Resizing shadow storage on ${d} to $MaxSize ..." 'STEP'
-    $lines = @(& vssadmin.exe resize shadowstorage /for=$d /on=$d /maxsize=$MaxSize 2>&1 | ForEach-Object { "$_" })
-    foreach ($l in $lines) { if ($l -match '\S') { Write-Log "  $l" } }
-    Write-Log 'Shadow storage resize requested.' 'OK'
-    return ($lines -join "`r`n")
-}
-
-function Get-RharmyRestorePoints {
-    Write-Log 'Listing restore points...' 'STEP'
-    try {
-        $rps = @(Get-ComputerRestorePoint -ErrorAction Stop |
-                 Sort-Object CreationTime -Descending |
-                 Select-Object -First 12)
-    } catch {
-        Write-Log "  Could not enumerate restore points: $($_.Exception.Message)" 'WARN'
-        return 'Could not enumerate restore points.'
-    }
-    if ($rps.Count -eq 0) { Write-Log '  No restore points found.' 'WARN'; return 'No restore points found.' }
-    $lines = foreach ($r in $rps) {
-        $t = $r.ConvertToDateTime($r.CreationTime).ToString('yyyy-MM-dd HH:mm')
-        "{0}  {1}  (seq {2})" -f $t, $r.Description, $r.SequenceNumber
-    }
-    foreach ($l in $lines) { Write-Log "  $l" }
-    return ($lines -join "`r`n")
-}
-
-function Set-Show-VssOutput {
-    param([string]$Text)
-    $script:Sync['VssOutput'] = $Text
-    $ctl = Get-Ctl 'VssOutput'
-    if ($ctl) {
-        try {
-            $ctl.Dispatcher.InvokeAsync([action] {
-                $ctl.Text = $Text
-            }.GetNewClosure(), 'Background') | Out-Null
-        } catch { }
     }
 }
 
@@ -1398,131 +1331,6 @@ $script:Tweaks = @(
   }
 }
 
-# ============================ GAMING =======================================
-@{
-  Id='EnableGameMode'; Name='Enable Game Mode'; Category='Gaming'; Risk='Low'
-  Desc='Lets Windows prioritise the foreground game over background tasks.'
-  Recommended=$true
-  Apply={
-    Set-RegValue "$HKCU\Software\Microsoft\GameBar" 'AutoGameModeEnabled' 1
-    Set-RegValue "$HKCU\Software\Microsoft\GameBar" 'AllowAutoGameMode' 1
-    Set-RegValue "$HKCU\System\GameConfigStore" 'AutoGameModeEnabled' 1
-  }
-  Undo ={
-    Set-RegValue "$HKCU\Software\Microsoft\GameBar" 'AutoGameModeEnabled' 0
-    Set-RegValue "$HKCU\Software\Microsoft\GameBar" 'AllowAutoGameMode' 0
-    Set-RegValue "$HKCU\System\GameConfigStore" 'AutoGameModeEnabled' 0
-  }
-}
-@{
-  Id='EnableHAGS'; Name='Hardware-Accelerated GPU Scheduling (HAGS)'; Category='Gaming'; Risk='Medium'
-  Desc='Lets the GPU manage its own memory. Can cut latency. Needs a GPU driver that supports it and a reboot.'
-  Recommended=$false
-  Apply={
-    Set-RegValue "$HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" 'HwSchMode' 2
-    Write-Log '  HAGS enabled - reboot to take effect.' 'OK'
-  }
-  Undo ={
-    Set-RegValue "$HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" 'HwSchMode' 1
-    Write-Log '  HAGS disabled - reboot to take effect.'
-  }
-}
-@{
-  Id='DisableFullscreenOptimizations'; Name='Disable fullscreen optimizations'; Category='Gaming'; Risk='Low'
-  Desc='Stops Windows forcing its borderless "optimisation" on exclusive-fullscreen games - fixes stutter and input lag in some titles.'
-  Recommended=$true
-  Apply={
-    Set-RegValue "$HKCU\System\GameConfigStore" 'GameDVR_FSEBehaviorMode' 2
-    Set-RegValue "$HKCU\System\GameConfigStore" 'GameDVR_HonorUserFSEBehaviorMode' 1
-    Set-RegValue "$HKCU\System\GameConfigStore" 'GameDVR_DXGIHonorFSEWindowsCompatible' 1
-    Set-RegValue "$HKCU\System\GameConfigStore" 'GameDVR_EFSEFeatureFlags' 0
-  }
-  Undo ={
-    Set-RegValue "$HKCU\System\GameConfigStore" 'GameDVR_FSEBehaviorMode' 0
-    Set-RegValue "$HKCU\System\GameConfigStore" 'GameDVR_HonorUserFSEBehaviorMode' 0
-  }
-}
-@{
-  Id='DisableNetworkThrottling'; Name='Disable network throttling'; Category='Gaming'; Risk='Low'
-  Desc='Windows throttles network traffic when it thinks media is playing - which can spike ping. Turn it off.'
-  Recommended=$true
-  Apply={
-    Set-RegValue "$HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" 'NetworkThrottlingIndex' 0xFFFFFFFF
-  }
-  Undo ={
-    Set-RegValue "$HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" 'NetworkThrottlingIndex' 10
-  }
-}
-@{
-  Id='MMCSSGaming'; Name='MMCSS: prioritise games (low latency)'; Category='Gaming'; Risk='Low'
-  Desc='Sets the Multimedia Class Scheduler to favour the game over multimedia playback.'
-  Recommended=$true
-  Apply={
-    $m = "$HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile"
-    Set-RegValue $m 'SystemResponsiveness' 10
-    Set-RegValue "$m\Tasks\Games" 'GPU Priority' 8
-    Set-RegValue "$m\Tasks\Games" 'Priority' 6
-    Set-RegValue "$m\Tasks\Games" 'Scheduling Category' 'High' 'String'
-    Set-RegValue "$m\Tasks\Games" 'SFIO Priority' 'High' 'String'
-  }
-  Undo ={
-    $m = "$HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile"
-    Set-RegValue $m 'SystemResponsiveness' 20
-    Set-RegValue "$m\Tasks\Games" 'GPU Priority' 8
-    Set-RegValue "$m\Tasks\Games" 'Priority' 2
-    Set-RegValue "$m\Tasks\Games" 'Scheduling Category' 'Medium' 'String'
-    Set-RegValue "$m\Tasks\Games" 'SFIO Priority' 'Normal' 'String'
-  }
-}
-@{
-  Id='DisablePowerThrottling'; Name='Disable CPU power throttling'; Category='Gaming'; Risk='Medium'
-  Desc='Stops Windows down-clocking the CPU to save power (hurts frametimes). More heat/battery use.'
-  Recommended=$false
-  Apply={
-    Set-RegValue "$HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" 'PowerThrottlingOff' 1
-  }
-  Undo ={
-    Set-RegValue "$HKLM\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" 'PowerThrottlingOff' 0
-  }
-}
-@{
-  Id='OptimizeMouseInput'; Name='Tune mouse input for gaming'; Category='Gaming'; Risk='Low'
-  Desc='Raises the mouse data queue size and shortens hover delay for snappier, lower-latency input.'
-  Recommended=$false
-  Apply={
-    Set-RegValue "$HKCU\Control Panel\Mouse" 'MouseDataQueueSize' 20
-    Set-RegValue "$HKCU\Control Panel\Mouse" 'MouseSensitivity' '10' 'String'
-    Set-RegValue "$HKCU\Control Panel\Desktop" 'MouseHoverTime' '40' 'String'
-  }
-  Undo ={
-    Set-RegValue "$HKCU\Control Panel\Mouse" 'MouseDataQueueSize' '<delete>'
-    Set-RegValue "$HKCU\Control Panel\Mouse" 'MouseSensitivity' '10' 'String'
-    Set-RegValue "$HKCU\Control Panel\Desktop" 'MouseHoverTime' '400' 'String'
-  }
-}
-@{
-  Id='OptimizeBootTimeout'; Name='Shorten boot menu timeout'; Category='Gaming'; Risk='Low'
-  Desc='Skips the 30-second "Choose an operating system" delay on single-boot systems.'
-  Recommended=$false
-  Apply={ & bcdedit.exe /timeout 3 | ForEach-Object { Write-Log "  $_" } }
-  Undo ={ & bcdedit.exe /timeout 30 | ForEach-Object { Write-Log "  $_" } }
-}
-@{
-  Id='DisableHPET'; Name='Force HPET off (Timer Resolution)'; Category='Gaming'; Risk='High'
-  Desc='Modern CPUs work better with their native timers; a forced HPET can cost frames. High risk: revert if stutters appear.'
-  Recommended=$false
-  Apply={
-    & bcdedit.exe /deletevalue useplatformclock | Out-Null
-    & bcdedit.exe /deletevalue useplatformtick | Out-Null
-    Set-RegValue "$HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel" 'GlobalTimerResolutionRequests' 1
-    Write-Log '  HPET platform clock removed.' 'OK'
-  }
-  Undo ={
-    & bcdedit.exe /set useplatformclock true | Out-Null
-    Write-Log '  HPET platform clock re-enabled.'
-  }
-}
-
 # ============================ SECURITY =====================================
 @{
   Id='EnableUACMax'; Name='Set UAC to always notify'; Category='Security'; Risk='Low'
@@ -2015,7 +1823,6 @@ $script:CancelArmed = $false
 $script:WorkerFunctions = @(
     'Write-Log', 'Set-Status', 'Invoke-OnUi',
     'Test-Admin', 'Get-SystemInfo', 'New-RharmyRestorePoint',
-    'Get-ShadowStorage', 'Resize-ShadowStorage', 'Get-RharmyRestorePoints',
     'Set-RegValue', 'Set-ServiceStartup', 'Set-ScheduledTaskState', 'Restart-Explorer',
     'Test-Winget', 'Install-Winget', 'Test-Choco', 'Install-Choco',
     'Install-App', 'Uninstall-App', 'Update-AllApps',
@@ -2149,8 +1956,7 @@ function Set-BusyUi {
     foreach ($n in @('BtnInstall','BtnUninstall','BtnUpgrade','BtnTweakApply','BtnTweakUndo',
                      'BtnFeatureApply','BtnUpdDefault','BtnUpdSecurity','BtnUpdDisabled',
                      'BtnUpdCheck','BtnRestore','BtnLoadCfg','BtnSaveCfg',
-                     'BtnAppAll','BtnAppNone','BtnTweakRec','BtnTweakNone',
-                     'BtnVssList','BtnVssRestore','BtnVssResize')) {
+                     'BtnAppAll','BtnAppNone','BtnTweakRec','BtnTweakNone')) {
         $c = $win.FindName($n)
         if ($c) { $c.IsEnabled = -not $On }
     }
@@ -2281,35 +2087,17 @@ $script:Xaml = @'
 
   <Window.Resources>
     <!-- palette -->
-    <SolidColorBrush x:Key="Bg"      Color="#0E1017"/>
-    <SolidColorBrush x:Key="Panel"   Color="#171A24"/>
-    <SolidColorBrush x:Key="Panel2"  Color="#1F2430"/>
-    <SolidColorBrush x:Key="Panel3"  Color="#272D3D"/>
-    <SolidColorBrush x:Key="Accent"  Color="#6E9BFF"/>
-    <SolidColorBrush x:Key="Accent2" Color="#3D6FE0"/>
-    <SolidColorBrush x:Key="Fg"      Color="#EDF0F7"/>
-    <SolidColorBrush x:Key="Muted"   Color="#8B93A7"/>
+    <SolidColorBrush x:Key="Bg"      Color="#12141A"/>
+    <SolidColorBrush x:Key="Panel"   Color="#1A1D26"/>
+    <SolidColorBrush x:Key="Panel2"  Color="#222633"/>
+    <SolidColorBrush x:Key="Accent"  Color="#4EA1FF"/>
+    <SolidColorBrush x:Key="Accent2" Color="#2C7BE5"/>
+    <SolidColorBrush x:Key="Fg"      Color="#E8EAF0"/>
+    <SolidColorBrush x:Key="Muted"   Color="#8A93A6"/>
     <SolidColorBrush x:Key="Ok"      Color="#3DD68C"/>
-    <SolidColorBrush x:Key="Warn"    Color="#F5B04C"/>
+    <SolidColorBrush x:Key="Warn"    Color="#F0A93B"/>
     <SolidColorBrush x:Key="Danger"  Color="#F4614E"/>
-    <SolidColorBrush x:Key="Line"    Color="#2A3140"/>
-
-    <!-- gradients -->
-    <LinearGradientBrush x:Key="HeaderGrad" StartPoint="0,0" EndPoint="1,0">
-      <GradientStop Color="#1B2130" Offset="0"/>
-      <GradientStop Color="#151924" Offset="0.55"/>
-      <GradientStop Color="#1B2130" Offset="1"/>
-    </LinearGradientBrush>
-
-    <LinearGradientBrush x:Key="SideGrad" StartPoint="0,0" EndPoint="0,1">
-      <GradientStop Color="#161A25" Offset="0"/>
-      <GradientStop Color="#12151E" Offset="1"/>
-    </LinearGradientBrush>
-
-    <LinearGradientBrush x:Key="AccentGrad" StartPoint="0,0" EndPoint="1,0">
-      <GradientStop Color="#5B8CFF" Offset="0"/>
-      <GradientStop Color="#7A5CFF" Offset="1"/>
-    </LinearGradientBrush>
+    <SolidColorBrush x:Key="Line"    Color="#2C3142"/>
 
     <Style TargetType="TextBlock">
       <Setter Property="Foreground" Value="{StaticResource Fg}"/>
@@ -2356,9 +2144,6 @@ $script:Xaml = @'
           <ControlTemplate TargetType="Button">
             <Border x:Name="b" CornerRadius="6" Background="{TemplateBinding Background}"
                     Padding="{TemplateBinding Padding}">
-              <Border.Effect>
-                <DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.25" Color="#000000"/>
-              </Border.Effect>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
@@ -2400,7 +2185,7 @@ $script:Xaml = @'
                 <Setter Property="Foreground" Value="{StaticResource Fg}"/>
               </Trigger>
               <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="b" Property="Background" Value="{StaticResource AccentGrad}"/>
+                <Setter TargetName="b" Property="Background" Value="#2C7BE5"/>
                 <Setter Property="Foreground" Value="White"/>
                 <Setter Property="FontWeight" Value="SemiBold"/>
               </Trigger>
@@ -2447,12 +2232,10 @@ $script:Xaml = @'
     </Grid.RowDefinitions>
 
     <!-- SECTION: HEADER -->
-    <Border Grid.Row="0" Background="{StaticResource HeaderGrad}" Padding="18,12"
-            BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
+    <Border Grid.Row="0" Background="#171A23" Padding="18,12" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
       <Grid>
         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-          <Border x:Name="LogoBadge" Width="34" Height="34" CornerRadius="9" Background="{StaticResource AccentGrad}"
-                  Margin="0,0,12,0">
+          <Border Width="34" Height="34" CornerRadius="8" Background="#2C7BE5" Margin="0,0,12,0">
             <TextBlock Text="T" FontSize="20" FontWeight="Bold" Foreground="White"
                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
           </Border>
@@ -2480,7 +2263,7 @@ $script:Xaml = @'
       </Grid.ColumnDefinitions>
 
       <!-- sidebar -->
-      <Border Grid.Column="0" Background="{StaticResource SideGrad}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
+      <Border Grid.Column="0" Background="#171A23" BorderBrush="{StaticResource Line}" BorderThickness="0,0,1,0">
         <DockPanel Margin="10,14,10,10">
           <StackPanel DockPanel.Dock="Bottom">
             <Separator Background="{StaticResource Line}" Margin="0,8"/>
@@ -2654,34 +2437,6 @@ $script:Xaml = @'
             <Border Background="{StaticResource Panel}" CornerRadius="8" Padding="16">
               <StackPanel x:Name="DiskPanel"/>
             </Border>
-
-            <TextBlock Text="System Restore &amp; Shadow Storage" FontSize="15" FontWeight="SemiBold" Margin="0,20,0,8"/>
-            <Border Background="{StaticResource Panel}" CornerRadius="8" Padding="16">
-              <StackPanel>
-                <TextBlock TextWrapping="Wrap" Foreground="{StaticResource Muted}" Margin="0,0,0,12"
-                           Text="Volume Shadow Copy reserves disk space for restore points and can quietly eat a whole drive. Inspect what's used, then cap it (e.g. 2GB) with vssadmin."/>
-                <WrapPanel>
-                  <StackPanel Orientation="Horizontal" Margin="0,0,12,8">
-                    <TextBlock Text="Drive" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{StaticResource Muted}"/>
-                    <TextBox x:Name="VssDrive" Text="C:" Width="70" VerticalContentAlignment="Center"/>
-                  </StackPanel>
-                  <StackPanel Orientation="Horizontal" Margin="0,0,12,8">
-                    <TextBlock Text="Max size" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{StaticResource Muted}"/>
-                    <TextBox x:Name="VssSize" Text="2GB" Width="90" VerticalContentAlignment="Center"/>
-                  </StackPanel>
-                  <Button x:Name="BtnVssResize" Style="{StaticResource BtnPrimary}" Content="Resize Shadow Storage" Margin="0,0,8,8"/>
-                  <Button x:Name="BtnVssList" Style="{StaticResource Btn}" Content="List Shadow Storage" Margin="0,0,8,8"/>
-                  <Button x:Name="BtnVssRestore" Style="{StaticResource Btn}" Content="List Restore Points" Margin="0,0,8,8"/>
-                </WrapPanel>
-                <Border Background="#0C0E13" CornerRadius="6" BorderBrush="{StaticResource Line}" BorderThickness="1" Margin="0,4,0,0">
-                  <TextBox x:Name="VssOutput" Background="Transparent" BorderThickness="0" Foreground="#9FB0CC"
-                           FontFamily="Consolas" FontSize="11" IsReadOnly="True" Padding="10"
-                           TextWrapping="Wrap" MinHeight="110" MaxHeight="220"
-                           VerticalScrollBarVisibility="Auto"/>
-                </Border>
-              </StackPanel>
-            </Border>
-
             <WrapPanel Margin="0,16,0,0">
               <Button x:Name="BtnSysRefresh" Style="{StaticResource Btn}" Content="Refresh"/>
               <Button x:Name="BtnSysExport"  Style="{StaticResource Btn}" Content="Export Report"/>
@@ -2712,7 +2467,7 @@ $script:Xaml = @'
     </Grid>
 
     <!-- SECTION: STATUS BAR -->
-    <Border Grid.Row="2" Background="{StaticResource HeaderGrad}" Padding="16,8" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
+    <Border Grid.Row="2" Background="#171A23" Padding="16,8" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0">
       <Grid>
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="*"/>
@@ -2854,7 +2609,7 @@ function Build-TweakPage {
 
     $riskColor = @{ 'Low' = '#3DD68C'; 'Medium' = '#F0A93B'; 'High' = '#F4614E' }
 
-    foreach ($cat in @('Essential','Performance','Gaming','Privacy','Explorer','Debloat','Security')) {
+    foreach ($cat in @('Essential','Performance','Privacy','Explorer','Debloat','Security')) {
         $items = @($script:Tweaks | Where-Object { $_.Category -eq $cat })
         if ($items.Count -eq 0) { continue }
 
@@ -2868,22 +2623,10 @@ function Build-TweakPage {
 
         foreach ($tw in $items) {
             $card = New-Object Windows.Controls.Border
-            $card.Background      = New-Brush '#171A24'
-            $card.CornerRadius    = [Windows.CornerRadius]::new(8)
-            $card.Padding         = '12,10'
-            $card.Margin          = '0,0,0,6'
-            $card.BorderBrush     = New-Brush '#2A3140'
-            $card.BorderThickness = [Windows.Thickness]::new(1)
-            $card.Add_MouseEnter({
-                param($s, $e)
-                $s.BorderBrush = New-Brush '#3D6FE0'
-                $s.Background  = New-Brush '#1B1F2B'
-            })
-            $card.Add_MouseLeave({
-                param($s, $e)
-                $s.BorderBrush = New-Brush '#2A3140'
-                $s.Background  = New-Brush '#171A24'
-            })
+            $card.Background   = New-Brush '#1A1D26'
+            $card.CornerRadius = [Windows.CornerRadius]::new(7)
+            $card.Padding      = '12,10'
+            $card.Margin       = '0,0,0,6'
 
             $grid = New-Object Windows.Controls.Grid
             $c1 = New-Object Windows.Controls.ColumnDefinition; $c1.Width = '*'
@@ -3298,34 +3041,6 @@ function Register-RharmyEvents {
     # ---- system ------------------------------------------------------------
     (Get-Ctl 'BtnSysRefresh').Add_Click({ Update-SysInfo; Write-Log 'System info refreshed.' })
     (Get-Ctl 'BtnSysTaskMgr').Add_Click({ Start-Process taskmgr.exe })
-
-    # ---- VSS / shadow storage ----------------------------------------------
-    (Get-Ctl 'BtnVssList').Add_Click({
-        Start-BackgroundJob -Name 'List shadow storage' -OnDone {
-            Set-Show-VssOutput -Text ([string]$script:Sync['VssOutput'])
-        } -Work {
-            $script:Sync['VssOutput'] = Get-ShadowStorage
-        }
-    })
-    (Get-Ctl 'BtnVssRestore').Add_Click({
-        Start-BackgroundJob -Name 'List restore points' -OnDone {
-            Set-Show-VssOutput -Text ([string]$script:Sync['VssOutput'])
-        } -Work {
-            $script:Sync['VssOutput'] = Get-RharmyRestorePoints
-        }
-    })
-    (Get-Ctl 'BtnVssResize').Add_Click({
-        $drive = (Get-Ctl 'VssDrive').Text.Trim()
-        $size  = (Get-Ctl 'VssSize').Text.Trim()
-        if (-not $drive) { $drive = "$env:SystemDrive" }
-        if (-not $size)  { $size = '2GB' }
-        if (-not (Show-Ask "Resize shadow storage on ${drive} to ${size}?`n`nThis caps how much disk space restore points may use." 'Warning')) { return }
-        Start-BackgroundJob -Name 'Resize shadow storage' -Vars @{ Drive = $drive; Max = $size } -OnDone {
-            Set-Show-VssOutput -Text ([string]$script:Sync['VssOutput'])
-        } -Work {
-            $script:Sync['VssOutput'] = Resize-ShadowStorage -Drive $script:Drive -MaxSize $script:Max
-        }
-    })
     (Get-Ctl 'BtnSysExport').Add_Click({
         $dlg = New-Object Microsoft.Win32.SaveFileDialog
         $dlg.Filter   = 'Text file (*.txt)|*.txt'
@@ -3390,19 +3105,6 @@ function Show-RharmyGui {
     $script:Sync['LogBox']     = $win.FindName('LogBox')
     $script:Sync['StatusText'] = $win.FindName('StatusText')
     $script:Sync['Progress']   = $win.FindName('Progress')
-
-    # Drop shadows cannot be shared via XAML resources at runtime (x:Shared is
-    # compile-only), so apply the logo shadow here as a fresh instance.
-    try {
-        $logo = $win.FindName('LogoBadge')
-        if ($logo) {
-            $fx = New-Object Windows.Media.Effects.DropShadowEffect
-            $fx.BlurRadius  = 10
-            $fx.ShadowDepth = 2
-            $fx.Opacity     = 0.25
-            $logo.Effect    = $fx
-        }
-    } catch { }
 
     (Get-Ctl 'VerText').Text = "v$script:AppVersion"
     if (-not (Test-Admin)) {
