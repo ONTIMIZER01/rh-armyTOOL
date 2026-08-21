@@ -93,7 +93,7 @@ if ($env:RHARMY_URL) { $script:SelfUrl = $env:RHARMY_URL }
 #  Globals
 # ---------------------------------------------------------------------------
 $script:AppName    = 'Rharmy Optimizer'
-$script:AppVersion = '1.0.0'
+$script:AppVersion = '2.0.0'
 $script:WorkDir    = Join-Path $env:LOCALAPPDATA 'Rharmy Optimizer'
 $script:LogFile    = Join-Path $script:WorkDir ("rharmy-optimizer_{0:yyyy-MM-dd}.log" -f (Get-Date))
 $script:Sync       = [hashtable]::Synchronized(@{})
@@ -468,6 +468,7 @@ $script:Apps = @(
     @{ Name='Obsidian';             Category='Utilities';  Winget='Obsidian.Obsidian';                 Choco='obsidian' }
     @{ Name='AutoHotkey';           Category='Utilities';  Winget='AutoHotkey.AutoHotkey';             Choco='autohotkey' }
     @{ Name='Sysinternals Suite';   Category='Utilities';  Winget='Microsoft.Sysinternals.Suite';      Choco='sysinternals' }
+    @{ Name='System Informer';      Category='Utilities';  Winget='WinsiderIS.SystemInformer';             Choco='' }
     @{ Name='Revo Uninstaller';     Category='Utilities';  Winget='RevoUninstaller.RevoUninstaller';   Choco='revo-uninstaller' }
     @{ Name='BleachBit';            Category='Utilities';  Winget='BleachBit.BleachBit';               Choco='bleachbit' }
 
@@ -940,6 +941,48 @@ $script:Tweaks = @(
   Recommended=$false
   Apply={ Set-ServiceStartup 'WSearch' 'Disabled' }
   Undo ={ Set-ServiceStartup 'WSearch' 'AutomaticDelayedStart'; Start-Service WSearch -EA SilentlyContinue }
+}
+
+# ============================ GAMING ========================================
+@{
+  Id='EnableGameMode'; Name='Enable Windows Game Mode'; Category='Performance'; Risk='Low'
+  Desc='Tells Windows to prioritize gaming workloads and reduce background interference.'
+  Recommended=$true
+  Apply={
+    Set-RegValue "$HKCU\Software\Microsoft\GameBar" 'AutoGameModeEnabled' 1
+    Set-RegValue "$HKCU\Software\Microsoft\GameBar" 'AllowAutoGameMode' 1
+    Write-Log '  Windows Game Mode enabled.' 'OK'
+  }
+  Undo={
+    Set-RegValue "$HKCU\Software\Microsoft\GameBar" 'AutoGameModeEnabled' 0
+    Set-RegValue "$HKCU\Software\Microsoft\GameBar" 'AllowAutoGameMode' 0
+  }
+}
+@{
+  Id='EnableHAGS'; Name='Enable Hardware-Accelerated GPU Scheduling'; Category='Performance'; Risk='Medium'
+  Desc='Enables HAGS when supported by the GPU driver. Requires a reboot and may vary by driver/game.'
+  Recommended=$false
+  Apply={ Set-RegValue "${HKLM}\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" 'HwSchMode' 2; Write-Log '  HAGS enabled; reboot required.' 'OK' }
+  Undo={ Set-RegValue "${HKLM}\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" 'HwSchMode' 1; Write-Log '  HAGS disabled/defaulted; reboot required.' 'OK' }
+}
+@{
+  Id='DisablePowerThrottling'; Name='Disable Windows Power Throttling'; Category='Performance'; Risk='Medium'
+  Desc='Prevents Windows from aggressively throttling background processes. Uses more power.'
+  Recommended=$false
+  Apply={ Set-RegValue "${HKLM}\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" 'PowerThrottlingOff' 1; Write-Log '  Power throttling disabled.' 'OK' }
+  Undo={ Set-RegValue "${HKLM}\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling" 'PowerThrottlingOff' 0 }
+}
+@{
+  Id='LimitVssTo2GB'; Name='Limit C: VSS shadow storage to 2 GB'; Category='Performance'; Risk='High'
+  Desc='Runs vssadmin resize shadowstorage for C:. This can delete older restore snapshots when shrinking the limit.'
+  Recommended=$false
+  Apply={
+    Write-Log '  Current VSS shadow storage:' 'STEP'
+    & vssadmin.exe list shadowstorage | ForEach-Object { if ($_ -match '\S') { Write-Log "    $_" } }
+    & vssadmin.exe resize shadowstorage /for=C: /on=C: /maxsize=2GB | ForEach-Object { if ($_ -match '\S') { Write-Log "    $_" } }
+    if ($LASTEXITCODE -eq 0) { Write-Log '  C: shadow storage resized to 2 GB.' 'OK' } else { Write-Log "  vssadmin exited with code $LASTEXITCODE." 'WARN' }
+  }
+  Undo={ Write-Log '  VSS size was intentionally not auto-restored. Use the VSS panel to choose a larger limit.' 'WARN' }
 }
 
 # ============================ PRIVACY ======================================
@@ -1827,7 +1870,7 @@ $script:WorkerFunctions = @(
     'Test-Winget', 'Install-Winget', 'Test-Choco', 'Install-Choco',
     'Install-App', 'Uninstall-App', 'Update-AllApps',
     'Invoke-Tweak', 'Set-WindowsFeatureState', 'Set-UpdatePolicy',
-    'Install-WindowsUpdates', 'Export-RharmyConfig', 'Import-RharmyConfig',
+    'Install-WindowsUpdates', 'Export-RharmyConfig', 'Import-RharmyConfig', 'Get-VssShadowStorageText', 'Resize-VssShadowStorage2GB',
     'Copy-CatalogLocal'
 )
 
@@ -1956,7 +1999,7 @@ function Set-BusyUi {
     foreach ($n in @('BtnInstall','BtnUninstall','BtnUpgrade','BtnTweakApply','BtnTweakUndo',
                      'BtnFeatureApply','BtnUpdDefault','BtnUpdSecurity','BtnUpdDisabled',
                      'BtnUpdCheck','BtnRestore','BtnLoadCfg','BtnSaveCfg',
-                     'BtnAppAll','BtnAppNone','BtnTweakRec','BtnTweakNone')) {
+                     'BtnAppAll','BtnAppNone','BtnTweakRec','BtnTweakNone','BtnGamePerformance','BtnGameDns','BtnGameSettings','BtnGameCache','BtnVssList','BtnVss2GB')) {
         $c = $win.FindName($n)
         if ($c) { $c.IsEnabled = -not $On }
     }
@@ -2081,9 +2124,10 @@ $script:Brush       = @{}
 $script:Xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Rharmy Optimizer" Height="800" Width="1280"
-        WindowStartupLocation="CenterScreen" Background="#12141A"
-        FontFamily="Segoe UI" MinWidth="1040" MinHeight="640">
+        Title="Rharmy Optimizer" Height="820" Width="1320"
+        WindowStartupLocation="CenterScreen" Background="#0F1117"
+        FontFamily="Segoe UI" MinWidth="780" MinHeight="560"
+        ResizeMode="CanResize">
 
   <Window.Resources>
     <!-- palette -->
@@ -2167,8 +2211,8 @@ $script:Xaml = @'
     <Style x:Key="NavTab" TargetType="RadioButton">
       <Setter Property="Foreground" Value="{StaticResource Muted}"/>
       <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="FontSize" Value="14"/>
-      <Setter Property="Margin" Value="0,2"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Margin" Value="0,1"/>
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="RadioButton">
@@ -2241,7 +2285,7 @@ $script:Xaml = @'
           </Border>
           <StackPanel VerticalAlignment="Center">
             <TextBlock Text="Rharmy Optimizer" FontSize="18" FontWeight="Bold"/>
-            <TextBlock x:Name="SubTitle" Text="Windows all-in-one utility"
+            <TextBlock x:Name="SubTitle" Text="Gaming + Windows optimization suite"
                        FontSize="11" Foreground="{StaticResource Muted}"/>
           </StackPanel>
         </StackPanel>
@@ -2258,7 +2302,7 @@ $script:Xaml = @'
     <!-- SECTION: BODY -->
     <Grid Grid.Row="1">
       <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="212"/>
+        <ColumnDefinition Width="180" MinWidth="160"/>
         <ColumnDefinition Width="*"/>
       </Grid.ColumnDefinitions>
 
@@ -2275,6 +2319,7 @@ $script:Xaml = @'
           <StackPanel x:Name="NavPanel">
             <RadioButton x:Name="NavInstall"  Style="{StaticResource NavTab}" Tag="&#x2B07;"  Content="Install"  IsChecked="True" GroupName="nav"/>
             <RadioButton x:Name="NavTweaks"   Style="{StaticResource NavTab}" Tag="&#x2699;"  Content="Tweaks"   GroupName="nav"/>
+            <RadioButton x:Name="NavGaming"   Style="{StaticResource NavTab}" Tag="&#x1F3AE;" Content="Gaming"   GroupName="nav"/>
             <RadioButton x:Name="NavConfig"   Style="{StaticResource NavTab}" Tag="&#x1F527;" Content="Config"   GroupName="nav"/>
             <RadioButton x:Name="NavUpdates"  Style="{StaticResource NavTab}" Tag="&#x27F3;"  Content="Updates"  GroupName="nav"/>
             <RadioButton x:Name="NavSystem"   Style="{StaticResource NavTab}" Tag="&#x1F5A5;" Content="System"   GroupName="nav"/>
@@ -2426,6 +2471,57 @@ $script:Xaml = @'
           </StackPanel>
         </ScrollViewer>
 
+        <!-- PAGE: GAMING -->
+        <ScrollViewer x:Name="PageGaming" Margin="18" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+          <StackPanel>
+            <TextBlock Text="Gaming Center" FontSize="22" FontWeight="Bold" Margin="0,0,0,3"/>
+            <TextBlock Text="FPS, latency, storage and gaming-focused Windows controls." Foreground="{StaticResource Muted}" Margin="0,0,0,16"/>
+
+            <WrapPanel>
+              <Border Background="{StaticResource Panel}" CornerRadius="10" Padding="16" Margin="0,0,10,10" Width="300">
+                <StackPanel>
+                  <TextBlock Text="Performance Mode" FontSize="15" FontWeight="SemiBold"/>
+                  <TextBlock Text="Activate Ultimate Performance and reduce background overhead." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,10"/>
+                  <Button x:Name="BtnGamePerformance" Style="{StaticResource BtnPrimary}" Content="Apply Gaming Performance" HorizontalAlignment="Left"/>
+                </StackPanel>
+              </Border>
+              <Border Background="{StaticResource Panel}" CornerRadius="10" Padding="16" Margin="0,0,10,10" Width="300">
+                <StackPanel>
+                  <TextBlock Text="Latency Tools" FontSize="15" FontWeight="SemiBold"/>
+                  <TextBlock Text="Flush DNS, renew networking and open the Windows gaming settings." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,10"/>
+                  <WrapPanel>
+                    <Button x:Name="BtnGameDns" Style="{StaticResource Btn}" Content="Flush DNS"/>
+                    <Button x:Name="BtnGameSettings" Style="{StaticResource Btn}" Content="Gaming Settings"/>
+                  </WrapPanel>
+                </StackPanel>
+              </Border>
+              <Border Background="{StaticResource Panel}" CornerRadius="10" Padding="16" Margin="0,0,10,10" Width="300">
+                <StackPanel>
+                  <TextBlock Text="Shader / Temp Cleanup" FontSize="15" FontWeight="SemiBold"/>
+                  <TextBlock Text="Clear temporary DirectX shader cache and user temp files." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,10"/>
+                  <Button x:Name="BtnGameCache" Style="{StaticResource Btn}" Content="Clean Gaming Cache" HorizontalAlignment="Left"/>
+                </StackPanel>
+              </Border>
+            </WrapPanel>
+
+            <Border Background="{StaticResource Panel}" CornerRadius="10" Padding="16" Margin="0,4,0,12">
+              <StackPanel>
+                <TextBlock Text="Volume Shadow Copy Storage" FontSize="16" FontWeight="SemiBold"/>
+                <TextBlock Text="View current VSS allocation or cap C: shadow storage at 2 GB. Resizing can remove older restore snapshots." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,12"/>
+                <WrapPanel>
+                  <Button x:Name="BtnVssList" Style="{StaticResource Btn}" Content="List Shadow Storage"/>
+                  <Button x:Name="BtnVss2GB" Style="{StaticResource BtnDanger}" Content="Resize C: to 2 GB"/>
+                </WrapPanel>
+                <TextBox x:Name="VssOutput" Height="130" Margin="0,8,0,0" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" FontFamily="Consolas"/>
+              </StackPanel>
+            </Border>
+
+            <Border Background="#17251F" CornerRadius="10" Padding="14" BorderBrush="#285A42" BorderThickness="1">
+              <TextBlock Text="Tip: GPU driver settings, game-specific graphics settings and overlays can have a larger FPS impact than registry tweaks. Use restore points before system-level changes." Foreground="#A7D9BF" TextWrapping="Wrap"/>
+            </Border>
+          </StackPanel>
+        </ScrollViewer>
+
         <!-- PAGE: SYSTEM -->
         <ScrollViewer x:Name="PageSystem" Margin="18" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
           <StackPanel>
@@ -2485,6 +2581,23 @@ $script:Xaml = @'
   </Grid>
 </Window>
 '@
+
+function Get-VssShadowStorageText {
+    try {
+        $out = & vssadmin.exe list shadowstorage 2>&1 | Out-String
+        if ([string]::IsNullOrWhiteSpace($out)) { return 'No VSS output was returned.' }
+        return $out.Trim()
+    } catch { return "VSS query failed: $($_.Exception.Message)" }
+}
+
+function Resize-VssShadowStorage2GB {
+    if (-not (Test-Admin)) { Write-Log 'Administrator rights are required for VSS resize.' 'ERROR'; return }
+    Write-Log 'VSS resize requested: /for=C: /on=C: /maxsize=2GB' 'STEP'
+    $out = & vssadmin.exe resize shadowstorage /for=C: /on=C: /maxsize=2GB 2>&1
+    foreach ($line in $out) { if ($line -match '\S') { Write-Log "  $line" } }
+    if ($LASTEXITCODE -eq 0) { Write-Log 'VSS shadow storage resized to 2 GB.' 'OK' }
+    else { Write-Log "VSS resize failed with exit code $LASTEXITCODE." 'ERROR' }
+}
 
 # ---------------------------------------------------------------------------
 #  Small UI helpers (script scope - handlers must be able to reach them)
@@ -2826,7 +2939,7 @@ function Register-RharmyEvents {
     # ---- navigation -------------------------------------------------------
     $script:Pages = [ordered]@{
         NavInstall = 'PageInstall'; NavTweaks = 'PageTweaks'; NavConfig = 'PageConfig'
-        NavUpdates = 'PageUpdates'; NavSystem = 'PageSystem'; NavLog    = 'PageLog'
+        NavUpdates = 'PageUpdates'; NavGaming = 'PageGaming'; NavSystem = 'PageSystem'; NavLog    = 'PageLog'
     }
     foreach ($nav in @($script:Pages.Keys)) {
         $ctl = Get-Ctl $nav
@@ -3038,6 +3151,40 @@ function Register-RharmyEvents {
     (Get-Ctl 'BtnUpdPanel').Add_Click({ Start-Process 'ms-settings:windowsupdate' })
     (Get-Ctl 'BtnUpdHistory').Add_Click({ Start-Process 'ms-settings:windowsupdate-history' })
 
+    # ---- gaming -------------------------------------------------------------
+    (Get-Ctl 'BtnGamePerformance').Add_Click({
+        if (-not (Show-Ask 'Apply the recommended gaming performance preset?`n`nThis enables Game Mode and Ultimate Performance. Laptops may use more battery.')) { return }
+        Start-BackgroundJob -Name 'Gaming performance preset' -Vars @{ Ids = @('EnableGameMode','UltimatePerformance') } -Work {
+            foreach ($id in $script:Ids) {
+                $t = $script:Tweaks | Where-Object { $_.Id -eq $id } | Select-Object -First 1
+                if ($t) { Invoke-Tweak -Tweak $t -Action Apply | Out-Null }
+            }
+            Write-Log 'Gaming performance preset complete.' 'OK'
+        }
+    })
+    (Get-Ctl 'BtnGameDns').Add_Click({ Start-BackgroundJob -Name 'Flush DNS' -Work { Clear-DnsClientCache -EA SilentlyContinue; & ipconfig.exe /flushdns | ForEach-Object { if ($_ -match '\S') { Write-Log "  $_" } }; Write-Log 'DNS cache flushed.' 'OK' } })
+    (Get-Ctl 'BtnGameSettings').Add_Click({ Start-Process 'ms-settings:gaming-gamemode' })
+    (Get-Ctl 'BtnGameCache').Add_Click({
+        if (-not (Show-Ask 'Clear temporary DirectX shader cache and user temp files?')) { return }
+        Start-BackgroundJob -Name 'Gaming cache cleanup' -Work {
+            foreach ($p in @($env:TEMP, "$env:LOCALAPPDATA\D3DSCache", "$env:LOCALAPPDATA\NVIDIA\DXCache", "$env:LOCALAPPDATA\AMD\DxCache")) {
+                if (Test-Path $p) { Get-ChildItem $p -Recurse -Force -EA SilentlyContinue | Remove-Item -Force -Recurse -EA SilentlyContinue }
+            }
+            Write-Log 'Gaming cache cleanup complete.' 'OK'
+        }
+    })
+    (Get-Ctl 'BtnVssList').Add_Click({
+        Start-BackgroundJob -Name 'VSS shadow storage query' -OnDone { (Get-Ctl 'VssOutput').Text = Get-VssShadowStorageText } -Work {
+            $text = Get-VssShadowStorageText
+            Invoke-OnUi { (Get-Ctl 'VssOutput').Text = $text }
+            Write-Log 'VSS shadow storage listed.' 'OK'
+        }
+    })
+    (Get-Ctl 'BtnVss2GB').Add_Click({
+        if (-not (Show-Ask 'Resize C: shadow storage to 2 GB?`n`nThis may remove older restore snapshots when Windows needs to shrink the allocation.' 'Warning')) { return }
+        Start-BackgroundJob -Name 'Resize VSS to 2 GB' -Work { Resize-VssShadowStorage2GB }
+    })
+
     # ---- system ------------------------------------------------------------
     (Get-Ctl 'BtnSysRefresh').Add_Click({ Update-SysInfo; Write-Log 'System info refreshed.' })
     (Get-Ctl 'BtnSysTaskMgr').Add_Click({ Start-Process taskmgr.exe })
@@ -3117,6 +3264,7 @@ function Show-RharmyGui {
     Build-TweakPage
     Build-ConfigPage
     Update-SysInfo
+    try { (Get-Ctl 'VssOutput').Text = Get-VssShadowStorageText } catch { }
     Register-RharmyEvents
 
     Write-Log "$script:AppName $script:AppVersion started." 'OK'
