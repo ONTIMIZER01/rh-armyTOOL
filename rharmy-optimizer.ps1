@@ -2311,9 +2311,6 @@ $script:Xaml = @'
       <GradientStop Color="#7A5CFF" Offset="1"/>
     </LinearGradientBrush>
 
-    <DropShadowEffect x:Key="CardShadow" x:Shared="False" BlurRadius="16" ShadowDepth="4" Opacity="0.35" Color="#000000"/>
-    <DropShadowEffect x:Key="SoftShadow" x:Shared="False" BlurRadius="10" ShadowDepth="2" Opacity="0.25" Color="#000000"/>
-
     <Style TargetType="TextBlock">
       <Setter Property="Foreground" Value="{StaticResource Fg}"/>
       <Setter Property="FontSize" Value="13"/>
@@ -2358,7 +2355,10 @@ $script:Xaml = @'
         <Setter.Value>
           <ControlTemplate TargetType="Button">
             <Border x:Name="b" CornerRadius="6" Background="{TemplateBinding Background}"
-                    Padding="{TemplateBinding Padding}" Effect="{StaticResource SoftShadow}">
+                    Padding="{TemplateBinding Padding}">
+              <Border.Effect>
+                <DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.25" Color="#000000"/>
+              </Border.Effect>
               <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <ControlTemplate.Triggers>
@@ -2451,8 +2451,8 @@ $script:Xaml = @'
             BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
       <Grid>
         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-          <Border Width="34" Height="34" CornerRadius="9" Background="{StaticResource AccentGrad}"
-                  Effect="{StaticResource SoftShadow}" Margin="0,0,12,0">
+          <Border x:Name="LogoBadge" Width="34" Height="34" CornerRadius="9" Background="{StaticResource AccentGrad}"
+                  Margin="0,0,12,0">
             <TextBlock Text="T" FontSize="20" FontWeight="Bold" Foreground="White"
                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
           </Border>
@@ -3390,6 +3390,19 @@ function Show-RharmyGui {
     $script:Sync['LogBox']     = $win.FindName('LogBox')
     $script:Sync['StatusText'] = $win.FindName('StatusText')
     $script:Sync['Progress']   = $win.FindName('Progress')
+
+    # Drop shadows cannot be shared via XAML resources at runtime (x:Shared is
+    # compile-only), so apply the logo shadow here as a fresh instance.
+    try {
+        $logo = $win.FindName('LogoBadge')
+        if ($logo) {
+            $fx = New-Object Windows.Media.Effects.DropShadowEffect
+            $fx.BlurRadius  = 10
+            $fx.ShadowDepth = 2
+            $fx.Opacity     = 0.25
+            $logo.Effect    = $fx
+        }
+    } catch { }
 
     (Get-Ctl 'VerText').Text = "v$script:AppVersion"
     if (-not (Test-Admin)) {
